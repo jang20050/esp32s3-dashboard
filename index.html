@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XIAO 원격 대시보드</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--fg:#1d1f23;--mut:#6b7280;--on:#f59e0b;--ok:#10b981;--bad:#ef4444;--off:#d1d5db;--bd:#e5e7eb}
+@media (prefers-color-scheme:dark){:root{--bg:#111318;--card:#1b1e25;--fg:#e8eaed;--mut:#9aa0aa;--off:#3a3f4a;--bd:#2a2e37}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif;padding:24px 16px}
+main{max-width:460px;margin:0 auto;display:grid;gap:16px}
+h1{font-size:20px;margin:0 0 6px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:20px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:12px}
+h2{font-size:15px;margin:0;color:var(--mut);font-weight:600}
+.dot{width:56px;height:56px;border-radius:50%;background:var(--off);transition:.15s;flex:none}
+.dot.led{background:var(--on);box-shadow:0 0 24px var(--on)}
+.dot.touch{background:var(--ok);box-shadow:0 0 24px var(--ok)}
+.state{font-size:28px;font-weight:700;margin:8px 0 0}
+.btns{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}
+button{font:inherit;font-weight:600;padding:12px;border-radius:10px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);cursor:pointer}
+button.p{background:var(--on);border-color:var(--on);color:#1d1f23}
+.meta{color:var(--mut);font-size:13px;margin-top:10px;font-variant-numeric:tabular-nums}
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--mut)}
+.pill i{width:8px;height:8px;border-radius:50%;background:var(--off)}
+.pill.on i{background:var(--ok)}.pill.err i{background:var(--bad)}
+input{font:inherit;width:100%;padding:12px;border-radius:10px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);margin-top:12px}
+.err{color:var(--bad);font-size:13px;margin:8px 0 0;min-height:1em}
+.link{background:none;border:0;padding:0;color:var(--mut);font-size:12px;text-decoration:underline;font-weight:400}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+  <div>
+    <h1>XIAO ESP32-S3 원격 대시보드</h1>
+    <span class="pill" id="pill"><i></i><span id="pillTxt">연결 중…</span></span>
+  </div>
+
+  <section class="card" id="login" hidden>
+    <h2>접근 키</h2>
+    <form id="keyForm">
+      <input id="keyInput" type="password" autocomplete="current-password" placeholder="접근 키 입력" required>
+      <p class="err" id="keyErr"></p>
+      <button class="p" style="width:100%">연결</button>
+    </form>
+  </section>
+
+  <div id="app" hidden style="display:grid;gap:16px">
+    <section class="card">
+      <div class="row">
+        <div><h2>LED</h2><p class="state" id="ledTxt">-</p></div>
+        <div class="dot" id="ledDot"></div>
+      </div>
+      <div class="btns">
+        <button class="p" onclick="setLed(true)">켜기</button>
+        <button onclick="setLed(false)">끄기</button>
+      </div>
+    </section>
+    <section class="card">
+      <div class="row">
+        <div><h2>터치 센서 (D0)</h2><p class="state" id="tTxt">-</p></div>
+        <div class="dot" id="tDot"></div>
+      </div>
+      <p class="meta" id="tMeta"></p>
+    </section>
+    <div><button class="link" onclick="logout()">접근 키 지우기</button></div>
+  </div>
+</main>
+<script>
+const SUPABASE_URL = 'https://ehurkuazipdtfoqamgei.supabase.co';
+const SUPABASE_KEY = 'sb_publishable__-XK2kTAvH4Rn3MxEvXCDw_QNa_WRV_';
+const DEVICE = 'xiao';
+const $ = id => document.getElementById(id);
+
+let key = null;
+try { key = localStorage.getItem('xiaoKey'); } catch (e) {}
+let timer = null;
+
+async function rpc(fn, args) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+    method: 'POST',
+    headers: { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ p_device: DEVICE, p_key: key, ...args })
+  });
+  const data = await r.json();
+  if (!r.ok) throw Object.assign(new Error(data.message || r.status), { auth: data.code === '28000' });
+  return data;
+}
+
+function pill(cls, txt) { $('pill').className = 'pill ' + cls; $('pillTxt').textContent = txt; }
+
+function render(s) {
+  const age = s.device_seen_at ? (Date.now() - Date.parse(s.device_seen_at)) / 1000 : Infinity;
+  if (age < 5) pill('on', '보드 온라인');
+  else pill('err', s.device_seen_at ? `보드 오프라인 · 마지막 응답 ${fmtAge(age)} 전` : '보드 응답 없음');
+  $('ledTxt').textContent = s.led_lit ? (s.led_cmd ? '켜짐' : '켜짐 (터치)') : '꺼짐';
+  $('ledDot').className = 'dot' + (s.led_lit ? ' led' : '');
+  $('tTxt').textContent = s.touched ? '터치됨' : '대기';
+  $('tDot').className = 'dot' + (s.touched ? ' touch' : '');
+  $('tMeta').textContent = `값 ${s.touch_value} · 기준 ${s.touch_baseline} · 차이 ${s.touch_value - s.touch_baseline}`;
+}
+
+function fmtAge(sec) {
+  if (sec < 60) return Math.round(sec) + '초';
+  if (sec < 3600) return Math.round(sec / 60) + '분';
+  return Math.round(sec / 3600) + '시간';
+}
+
+async function poll() {
+  try { render(await rpc('get_state', {})); }
+  catch (e) {
+    if (e.auth) return showLogin('접근 키가 올바르지 않습니다.');
+    pill('err', '서버 연결 끊김 — 재시도 중…');
+  }
+  timer = setTimeout(poll, 500);
+}
+
+async function setLed(on) {
+  try { render(await rpc('set_led', { p_on: on })); } catch (e) { pill('err', '명령 전송 실패'); }
+}
+
+function showLogin(msg) {
+  clearTimeout(timer);
+  $('app').hidden = true; $('login').hidden = false;
+  $('keyErr').textContent = msg || '';
+  pill('', '접근 키 필요');
+  $('keyInput').focus();
+}
+
+function start() {
+  $('login').hidden = true; $('app').hidden = false;
+  clearTimeout(timer); poll();
+}
+
+function logout() {
+  try { localStorage.removeItem('xiaoKey'); } catch (e) {}
+  key = null; showLogin();
+}
+
+$('keyForm').onsubmit = ev => {
+  ev.preventDefault();
+  key = $('keyInput').value.trim();
+  try { localStorage.setItem('xiaoKey', key); } catch (e) {}
+  start();
+};
+
+key ? start() : showLogin();
+</script>
+</body>
+</html>
